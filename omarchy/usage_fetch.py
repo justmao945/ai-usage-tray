@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
-"""Fetch plan usage for Kimi / Zhipu / OpenCode Go / Command Code.
+"""Fetch plan usage for Kimi / Zhipu / DeepSeek balance.
 
 Config arrives via environment (keys + enable flags); prints one JSON object:
-{"kimi": {"plan": str|None, "windows": [{"label","pct","resetTs"|null}], "error": str|None}, ...}
+{"kimi": {"plan": str|None, "windows": [{"label","pct","resetTs"|null}], "error": str|None,
+          "text": str|None (optional stat shown in the bar/panel, e.g. DeepSeek balance)}, ...}
 """
 import json
 import os
 import sys
-import time
 import urllib.request
-import urllib.parse
 from datetime import datetime, timezone
 
 TIMEOUT = 15
@@ -17,7 +16,7 @@ TIMEOUT = 15
 # a valid key — every request identifies as a normal client instead.
 DEFAULT_UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) usage-fetch/1.0"
 
-PROVIDERS = ("kimi", "zhipu", "opencode", "commandcode")
+PROVIDERS = ("kimi", "zhipu", "deepseek")
 
 
 def env(name, default=""):
@@ -30,36 +29,7 @@ def enabled(pid):
 
 def api_key(pid):
     key = env(f"USAGE_{pid.upper()}_KEY", "").strip()
-    if key:
-        return key
-    if pid == "opencode":
-        return opencode_go_key()
-    if pid == "commandcode":
-        return commandcode_key()
-    return None
-
-
-def opencode_go_key():
-    base = env("XDG_DATA_HOME") or os.path.join(os.path.expanduser("~"), ".local", "share")
-    try:
-        with open(os.path.join(base, "opencode", "auth.json"), encoding="utf-8") as f:
-            root = json.load(f)
-        entry = root.get("opencode-go") or {}
-        key = entry.get("key")
-        if key:
-            return key
-        tokens = entry.get("tokens") or []
-        return tokens[0] if tokens else None
-    except (OSError, ValueError, IndexError):
-        return None
-
-
-def commandcode_key():
-    try:
-        with open(os.path.join(os.path.expanduser("~"), ".commandcode", "auth.json"), encoding="utf-8") as f:
-            return json.load(f).get("apiKey") or None
-    except (OSError, ValueError):
-        return None
+    return key or None
 
 
 def get(url, key, user_agent=DEFAULT_UA):
@@ -159,12 +129,26 @@ def fetch_kimi(key):
         return failed("kimi", "No API key configured (sk-kimi-…)")
     base = "https://api.kimi.com/coding/v1"
     try:
+        # Plan name lives on /me now ("user_level_name"); /usages no longer
+        # carries user.membership. Best-effort: usages still works without it.
+        plan = None
+        try:
+            status, body = get(base + "/me", key, user_agent="KimiCLI/1.6")
+            if status == 200:
+                try:
+                    me = json.loads(body)
+                    name = str(me.get("user_level_name") or "").strip()
+                    plan = name or None
+                except ValueError:
+                    pass
+        except RuntimeError:
+            pass
         status, body = get(base + "/usages", key, user_agent="KimiCLI/1.6")
         if status == 404:
             status, body = get(base + "/usage", key, user_agent="KimiCLI/1.6")
         if status != 200:
             return failed("kimi", error_text(status, body, "Kimi"))
-        return parse_kimi(body)
+        return parse_kimi(body, plan)
     except RuntimeError as e:
         return failed("kimi", f"Kimi {e}")
 
@@ -181,7 +165,7 @@ def kimi_row(d, wid, label):
             "resetTs": iso_date(d.get("resetTime")) or iso_date(d.get("reset_at"))}
 
 
-def parse_kimi(body):
+def parse_kimi(body, plan):
     try:
         root = json.loads(body)
     except ValueError:
@@ -210,9 +194,6 @@ def parse_kimi(body):
             row = kimi_row(detail, f"kimi-win-{idx}", label)
             if row:
                 windows.append(row)
-    level = ((root.get("user") or {}).get("membership") or {}).get("level", "")
-    plan = {"LEVEL_FREE": "Adagio", "LEVEL_TRIAL": "Andante", "LEVEL_BASIC": "Moderato",
-            "LEVEL_INTERMEDIATE": "Allegretto", "LEVEL_ADVANCED": "Allegro"}.get(level, level or None)
     if not windows:
         return failed("kimi", "No usage windows in Kimi response")
     return {"plan": plan, "windows": order_windows(windows), "error": None}
@@ -278,122 +259,49 @@ def parse_zhipu(body, plan):
     return {"plan": plan, "windows": order_windows(windows), "error": None}
 
 
-# --- OpenCode ---
+# --- DeepSeek ---
 
-def fetch_opencode(key):
+# GET /user/balance: {"is_available": bool, "balance_infos": [
+#   {"currency": "CNY", "total_balance": "110.00", "granted_balance": "10.00",
+#    "topped_up_balance": "100.00"}]}
+CURRENCY_SYMBOLS = {"CNY": "¥", "USD": "$"}
+
+
+def fetch_deepseek(key):
     if not key:
-        return failed("opencode", "No API key configured (add it in settings, or log in via opencode CLI)")
+        return failed("deepseek", "No API key configured (sk-…)")
     try:
-        status, body = get("https://opencode.ai/zen/go/v1/usage", key)
+        status, body = get("https://api.deepseek.com/user/balance", key)
         if status != 200:
-            return failed("opencode", error_text(status, body, "OpenCode"))
-        try:
-            root = json.loads(body)
-        except ValueError:
-            return failed("opencode", "Failed to parse OpenCode response")
-        usage = root.get("usage") if isinstance(root, dict) else None
-        if not isinstance(usage, dict):
-            return failed("opencode", "Failed to parse OpenCode response")
-        windows = []
-        for name, label in (("rolling", "5h window"), ("weekly", "Weekly"), ("monthly", "Monthly")):
-            w = usage.get(name)
-            if not isinstance(w, dict):
-                continue
-            pct = num(w.get("percent", w.get("usagePercent"))) or 0
-            windows.append({"label": label, "pct": clamp_pct(pct),
-                            "resetTs": iso_date(w.get("resetsAt"))})
-        if not windows:
-            return failed("opencode", "No usage windows in OpenCode response")
-        return {"plan": "OpenCode Go", "windows": order_windows(windows), "error": None}
+            return failed("deepseek", error_text(status, body, "DeepSeek"))
+        return parse_deepseek(body)
     except RuntimeError as e:
-        return failed("opencode", f"OpenCode {e}")
+        return failed("deepseek", f"DeepSeek {e}")
 
 
-# --- Command Code ---
-
-def fetch_commandcode(key):
-    if not key:
-        return failed("commandcode", "No API key configured (add it in settings, or log in via cmd CLI)")
-    base = "https://api.commandcode.ai"
-    try:
-        status, body = get(base + "/alpha/billing/credits", key)
-        if status != 200:
-            return failed("commandcode", error_text(status, body, "Command Code"))
-        plan = monthly = None
-        try:
-            s2, b2 = get(base + "/alpha/billing/subscriptions", key)
-            if s2 == 200:
-                sub = json.loads(b2)
-                data = sub.get("data") if isinstance(sub, dict) else None
-                if isinstance(data, dict):
-                    pid = data.get("planId") or ""
-                    if "goat" in pid:
-                        plan = "GoAT"
-                    elif pid == "go" or pid.endswith("-go"):
-                        plan = "Go"
-                    else:
-                        plan = pid or None
-                    monthly = monthly_usage(key, data)
-        except Exception:
-            pass
-        return parse_commandcode(body, plan, monthly)
-    except RuntimeError as e:
-        return failed("commandcode", f"Command Code {e}")
-
-
-def monthly_usage(key, data):
-    reset = iso_date(data.get("currentPeriodEnd"))
-    try:
-        url = "https://api.commandcode.ai/alpha/usage/summary"
-        start = data.get("currentPeriodStart")
-        if start:
-            url += "?since=" + urllib.parse.quote(str(start), safe="")
-        status, body = get(url, key)
-        if status != 200:
-            return None
-        root = json.loads(body)
-        if not isinstance(root, dict):
-            return None
-        used = num(root.get("totalMonthlyCredits", root.get("totalCost")))
-        return (used, reset) if used is not None else None
-    except Exception:
-        return None
-
-
-def parse_commandcode(body, plan, monthly):
+def parse_deepseek(body):
     try:
         root = json.loads(body)
     except ValueError:
-        return failed("commandcode", "Failed to parse Command Code response")
-    if not isinstance(root, dict):
-        return failed("commandcode", "Failed to parse Command Code response")
-    limits = root.get("windowLimits")
-    if not isinstance(limits, dict):
-        return failed("commandcode", "Failed to parse Command Code response")
-    windows = []
-    for key_name, wid, label in (("fiveHour", "cc-5h", "5h window"), ("weekly", "cc-weekly", "Weekly")):
-        w = limits.get(key_name)
-        if not isinstance(w, dict):
-            continue
-        cap, used = num(w.get("cap")), num(w.get("used"))
-        if not cap or cap <= 0 or used is None:
-            continue
-        windows.append({"label": label, "pct": clamp_pct(used / cap * 100),
-                        "resetTs": flexible_ts(w.get("resetAt"))})
-    if monthly is not None:
-        credits = root.get("credits") if isinstance(root.get("credits"), dict) else None
-        remaining = num(credits.get("monthlyCredits")) if credits else None
-        used, reset = monthly
-        if remaining is not None and used + remaining > 0:
-            windows.append({"label": "Monthly", "pct": clamp_pct(used / (used + remaining) * 100),
-                            "resetTs": reset})
-    if not windows:
-        return failed("commandcode", "No usage windows in Command Code response")
-    return {"plan": plan, "windows": order_windows(windows), "error": None}
+        return failed("deepseek", "Failed to parse DeepSeek response")
+    infos = root.get("balance_infos") if isinstance(root, dict) else None
+    if not isinstance(infos, list) or not infos or not isinstance(infos[0], dict):
+        return failed("deepseek", "No balance in DeepSeek response")
+    total = str(infos[0].get("total_balance") or "").strip()
+    if not total:
+        return failed("deepseek", "No balance in DeepSeek response")
+    currency = str(infos[0].get("currency") or "").strip()
+    symbol = CURRENCY_SYMBOLS.get(currency.upper())
+    text = symbol + total if symbol else f"{currency} {total}".strip()
+    # Bar pill shows whole yuan only ("到元就够了"); the panel keeps the exact
+    # amount.
+    text_short = (symbol or (currency + " " if currency else "")) + total.split(".")[0]
+    # Balance is a stat, not a tier: it rides the "text" channel (panel
+    # caption); windows stay empty since there is no usage limit.
+    return {"plan": None, "windows": [], "error": None, "text": text, "textShort": text_short}
 
 
-FETCHERS = {"kimi": fetch_kimi, "zhipu": fetch_zhipu,
-            "opencode": fetch_opencode, "commandcode": fetch_commandcode}
+FETCHERS = {"kimi": fetch_kimi, "zhipu": fetch_zhipu, "deepseek": fetch_deepseek}
 
 
 def main():

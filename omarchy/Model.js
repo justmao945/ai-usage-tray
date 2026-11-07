@@ -70,10 +70,16 @@ function parseOutput(raw) {
   return null
 }
 
+// Single-letter provider badge for the bar pill and panel rows.
+function badgeLetter(pid) {
+  return { kimi: "K", zhipu: "Z", deepseek: "D" }[pid] || "?"
+}
+
 if (typeof module !== "undefined") {
   module.exports = {
     countdown: countdown, themeWarn: themeWarn, tier: tier, worstTier: worstTier,
     shortWindow: shortWindow, weeklyWindow: weeklyWindow,
-    pctText: pctText, barText: barText, parseOutput: parseOutput
+    pctText: pctText, barText: barText, parseOutput: parseOutput,
+    badgeLetter: badgeLetter
   }
 }

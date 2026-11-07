@@ -35,7 +35,7 @@ Panel {
   readonly property string lastError: host && host.lastError !== undefined ? host.lastError : ""
   readonly property double nowMs: host && host.nowMs ? host.nowMs : Date.now()
   readonly property var enabledIds: (host && host.enabledIds) ? host.enabledIds : []
-  // Usage view shows only configured providers; Settings shows all four.
+  // Usage view shows only configured providers; Settings shows all three.
   readonly property var visibleIds: (host && host.visibleIds) ? host.visibleIds : []
   readonly property var names: (host && host.names) ? host.names : ({})
   readonly property var brandColors: (host && host.brandColors) ? host.brandColors : ({})
@@ -63,6 +63,17 @@ Panel {
     { value: "120", label: "2 min" },
     { value: "300", label: "5 min" }
   ]
+
+  // Per-provider reveal state for the API key fields (eye toggle). Memory
+  // only: never persisted, resets when the panel instance dies.
+  property var keyRevealed: ({})
+  function keyVisible(pid) { return keyRevealed[pid] === true }
+  function toggleKeyVisible(pid) {
+    var next = {}
+    for (var k in keyRevealed) next[k] = keyRevealed[k]
+    next[pid] = !next[pid]
+    keyRevealed = next
+  }
 
   // Which provider the usage view shows: "" = all configured ones. A bar
   // badge click passes its id; the generic toggle shows everything.
@@ -117,7 +128,6 @@ Panel {
   function setEnabled(id, on) { if (host) host.setEnabled(id, on) }
   function setKey(id, key) { if (host) host.setKey(id, key) }
   function setInterval_(sec) { if (host) host.setSetting("refreshIntervalSec", sec) }
-  function credentialHint(id, settingsKey) { return host ? host.credentialHint(id, settingsKey) : "" }
 
   // Live value; returns the draft when the field is being edited.
   function keyValue(id) {
@@ -141,7 +151,15 @@ Panel {
     if (text !== strSetting(id + "Key", "")) setKey(id, text)
   }
 
-  onOpenedChanged: if (opened) { if (host) host.nowMs = Date.now(); doRefresh() }
+  onOpenedChanged: {
+    if (opened) {
+      if (host) host.nowMs = Date.now()
+      doRefresh()
+    } else {
+      // Closed: never leave a revealed API key exposed for the next open.
+      keyRevealed = ({})
+    }
+  }
   // While the Settings view is up the bar holds its refreshes — only the
   // configured interval timer keeps running, and it is ignored too (see
   // BarWidget.refresh()), so editing keys is never interrupted by churn.
@@ -281,7 +299,7 @@ Panel {
                     Text {
                       anchors.centerIn: parent
                       textFormat: Text.PlainText
-                      text: pid === "kimi" ? "K" : pid === "zhipu" ? "Z" : pid === "opencode" ? "O" : "C"
+                      text: Model.badgeLetter(pid)
                       color: pid === "kimi" ? "#000000" : "#ffffff"
                       font.family: root.fontFamily
                       font.pixelSize: 10
@@ -301,9 +319,9 @@ Panel {
                   }
 
                   Text {
-                    visible: !!(snap && snap.plan)
+                    visible: !!(snap && (snap.plan || snap.text))
                     textFormat: Text.PlainText
-                    text: snap ? String(snap.plan || "") : ""
+                    text: snap ? String(snap.plan || snap.text || "") : ""
                     color: root.dim
                     font.family: root.fontFamily
                     font.pixelSize: Style.font.caption
@@ -329,7 +347,7 @@ Panel {
                 }
 
                 Text {
-                  visible: !(snap && snap.error) && wins.length === 0
+                  visible: !(snap && snap.error) && wins.length === 0 && !(snap && snap.text)
                   width: parent.width
                   textFormat: Text.PlainText
                   text: root.refreshing ? "Loading…" : "No data yet."
@@ -410,7 +428,7 @@ Panel {
             }
 
             Repeater {
-              model: ["kimi", "zhipu", "opencode", "commandcode"]
+              model: ["kimi", "zhipu", "deepseek"]
               Column {
                 required property string modelData
                 readonly property string pid: modelData
@@ -429,7 +447,7 @@ Panel {
                     Text {
                       anchors.centerIn: parent
                       textFormat: Text.PlainText
-                      text: pid === "kimi" ? "K" : pid === "zhipu" ? "Z" : pid === "opencode" ? "O" : "C"
+                      text: Model.badgeLetter(pid)
                       color: "#ffffff"
                       font.family: root.fontFamily
                       font.pixelSize: 9
@@ -464,22 +482,53 @@ Panel {
                   }
                 }
 
-                TextField {
+                Item {
                   width: parent.width
-                  password: true
-                  placeholderText: root.credentialHint(pid, root.strSetting(pid + "Key", "")) || "API key"
-                  text: root.keyValue(pid)
-                  foreground: root.foreground
-                  font.family: root.fontFamily
-                  // Refresh runs in a background process and never blocks
-                  // the UI — the field stays editable throughout.
-                  enabled: true
-                  // textEdited (user input only), NOT textChanged: text is
-                  // bound to keyValue() which depends on the drafts written
-                  // here — textChanged would form a binding loop that churns
-                  // commits and can overwrite a just-pasted key.
-                  onTextEdited: root.draftChanged(pid, text)
-                  onEditingFinished: root.commitDraft(pid, text)
+                  height: keyField.implicitHeight
+
+                  TextField {
+                    id: keyField
+                    anchors.fill: parent
+                    password: !root.keyVisible(pid)
+                    rightPadding: eyeGlyph.width + Style.space(14)
+                    placeholderText: "API key"
+                    text: root.keyValue(pid)
+                    foreground: root.foreground
+                    font.family: root.fontFamily
+                    // Refresh runs in a background process and never blocks
+                    // the UI — the field stays editable throughout.
+                    enabled: true
+                    // textEdited (user input only), NOT textChanged: text is
+                    // bound to keyValue() which depends on the drafts written
+                    // here — textChanged would form a binding loop that churns
+                    // commits and can overwrite a just-pasted key.
+                    onTextEdited: root.draftChanged(pid, text)
+                    onEditingFinished: root.commitDraft(pid, text)
+                  }
+
+                  // Eye toggle: reveal the key while checking it. Glyphs are
+                  // the same nerd-font set the panel buttons use.
+                  Text {
+                    id: eyeGlyph
+                    anchors.right: parent.right
+                    anchors.rightMargin: Style.space(8)
+                    anchors.verticalCenter: parent.verticalCenter
+                    textFormat: Text.PlainText
+                    // Nerd-font icons, verified against the installed
+                    // JetBrainsMono NF cmap: FA eye = U+F06E, eye-slash =
+                    // U+F070 (U+F04A4 renders as a fork — MDI remapped).
+                    text: root.keyVisible(pid) ? "\u{F06E}" : "\u{F070}"
+                    color: root.dim
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.body
+
+                    MouseArea {
+                      anchors.fill: parent
+                      hoverEnabled: true
+                      cursorShape: Qt.PointingHandCursor
+                      onClicked: root.toggleKeyVisible(pid)
+                    }
+                  }
                 }
               }
             }

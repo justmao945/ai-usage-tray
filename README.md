@@ -17,7 +17,7 @@ Tap a tray icon to pop up that provider's usage panel with window progress, rese
 
 ## Omarchy Plugin (Linux)
 
-`omarchy/` is a `bar-widget` plugin (`just.usage`) porting the same four providers to the Omarchy bar: the pill shows one badge per configured provider (letter avatar + 5-hour percent; ≥70% theme orange, ≥90% urgent), clicking a badge opens that provider's panel with per-window progress bars, reset countdowns and a settings section (toggles, API keys, refresh interval — persisted to the widget's `shell.json` entry). The gaps between badges are inert; right-click refreshes. Fetching runs in `usage_fetch.py` (same endpoints as below, Bearer auth); OpenCode / Command Code keys can stay empty to reuse the CLI logins. Zhipu plan name is fetched every round (cheap, one extra call).
+`omarchy/` is a `bar-widget` plugin (`just.usage`) porting Kimi, Zhipu GLM and DeepSeek (account balance) to the Omarchy bar: the pill shows one badge per configured provider (letter avatar + 5-hour percent for usage plans, the balance amount for DeepSeek; ≥70% theme orange, ≥90% urgent), clicking a badge opens that provider's panel with per-window progress bars, reset countdowns and a settings section (toggles, API keys, refresh interval — persisted to the widget's `shell.json` entry). The gaps between badges are inert; right-click refreshes. Fetching runs in `usage_fetch.py` (same endpoints as below, Bearer auth); the DeepSeek balance comes from `GET https://api.deepseek.com/user/balance` and Kimi's plan tier from `GET https://api.kimi.com/coding/v1/me` (`user_level_name`). Zhipu plan name is fetched every round (cheap, one extra call).
 
 ```sh
 cp -r omarchy ~/.config/omarchy/plugins/usage

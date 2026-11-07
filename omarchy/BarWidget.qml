@@ -7,7 +7,7 @@ import qs.Commons
 import qs.Ui
 import "Model.js" as Model
 
-// Usage: live plan usage for Kimi / Zhipu GLM / OpenCode Go / Command Code.
+// Usage: live plan usage for Kimi / Zhipu GLM / DeepSeek balance.
 // Bar pill shows a brand avatar plus "<5h>/<weekly>" per enabled provider;
 // click pops the panel (usage rows + settings). Right-click refreshes.
 BarWidget {
@@ -42,14 +42,12 @@ BarWidget {
   // label color), so it is simply absent here and falls back to foreground.
   readonly property var brandColors: ({
     zhipu: "#296bfa",
-    opencode: "#1eb373",
-    commandcode: "#9961f5"
+    deepseek: "#4d6bfe"
   })
   readonly property var urls: ({
     kimi: "https://www.kimi.com/membership/subscription?tab=quota",
     zhipu: "https://bigmodel.cn/coding-plan/personal/usage",
-    opencode: "https://opencode.ai/go",
-    commandcode: "https://commandcode.ai/usage"
+    deepseek: "https://platform.deepseek.com/usage"
   })
 
   property var report: ({})
@@ -72,12 +70,10 @@ BarWidget {
     var e = {}
     e.USAGE_KIMI_ENABLED = boolSetting("kimiEnabled", true) ? "On" : "Off"
     e.USAGE_ZHIPU_ENABLED = boolSetting("zhipuEnabled", true) ? "On" : "Off"
-    e.USAGE_OPENCODE_ENABLED = boolSetting("opencodeEnabled", true) ? "On" : "Off"
-    e.USAGE_COMMANDCODE_ENABLED = boolSetting("commandcodeEnabled", true) ? "On" : "Off"
+    e.USAGE_DEEPSEEK_ENABLED = boolSetting("deepseekEnabled", true) ? "On" : "Off"
     e.USAGE_KIMI_KEY = strSetting("kimiKey", "")
     e.USAGE_ZHIPU_KEY = strSetting("zhipuKey", "")
-    e.USAGE_OPENCODE_KEY = strSetting("opencodeKey", "")
-    e.USAGE_COMMANDCODE_KEY = strSetting("commandcodeKey", "")
+    e.USAGE_DEEPSEEK_KEY = strSetting("deepseekKey", "")
     return e
   }
 
@@ -91,8 +87,7 @@ BarWidget {
     var list = []
     if (boolSetting("kimiEnabled", true)) list.push("kimi")
     if (boolSetting("zhipuEnabled", true)) list.push("zhipu")
-    if (boolSetting("opencodeEnabled", true)) list.push("opencode")
-    if (boolSetting("commandcodeEnabled", true)) list.push("commandcode")
+    if (boolSetting("deepseekEnabled", true)) list.push("deepseek")
     return list
   }
 
@@ -110,7 +105,8 @@ BarWidget {
   }
   function entryTier(id) {
     var e = entry(id)
-    if (!e || e.error || entryWindows(id).length === 0) return "dim"
+    if (!e || e.error) return "dim"
+    if (entryWindows(id).length === 0) return e.text ? "normal" : "dim"
     return Model.worstTier(entryWindows(id))
   }
   function entryColor(id) {
@@ -118,6 +114,10 @@ BarWidget {
     return t === "dim" ? root.dim : tierColor(t)
   }
   function entryText(id) {
+    var e = entry(id)
+    // Balance-style providers carry a stat string instead of usage windows.
+    // textShort is the whole-yuan form for the bar; panel shows the exact one.
+    if (e && (e.textShort || e.text)) return String(e.textShort || e.text)
     var ws = entryWindows(id)
     return Model.barText(Model.shortWindow(ws), Model.weeklyWindow(ws))
   }
@@ -191,13 +191,6 @@ BarWidget {
     setSetting(id + "Key", key)
     refresh()
   }
-  function credentialHint(id, settingsKey) {
-    if (String(settingsKey || "") !== "") return ""
-    if (id === "opencode") return "Empty = reuse opencode CLI login"
-    if (id === "commandcode") return "Empty = reuse cmd CLI login"
-    return ""
-  }
-
   // Shape contract for shell.summon/hide/toggle routing (Bar.findPanelWidget
   // requires open/close/opened on the bar-widget root).
   readonly property bool opened: panelLoader.item ? panelLoader.item.opened === true : false
@@ -409,7 +402,7 @@ BarWidget {
             spacing: 4
 
             PillBadge {
-              letter: providerRow.pid === "kimi" ? "K" : providerRow.pid === "zhipu" ? "Z" : providerRow.pid === "opencode" ? "O" : "C"
+              letter: Model.badgeLetter(providerRow.pid)
             }
 
             Text {
