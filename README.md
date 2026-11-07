@@ -1,7 +1,5 @@
 # UsageTray
 
-Part of the [ddu](../../) repository (MIT-licensed; the app itself is Apache-2.0).
-
 macOS menu bar tray: live plan usage for Kimi Code, Zhipu GLM Coding Plan, OpenCode Go, and Command Code — no browser needed.
 
 ![Menu bar](docs/menubar.png)
